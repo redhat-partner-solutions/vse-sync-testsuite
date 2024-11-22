@@ -3,6 +3,7 @@
 package collectors
 
 import (
+	"sync"
 	"time"
 
 	"github.com/redhat-partner-solutions/vse-sync-collection-tools/pkg/callbacks"
@@ -16,6 +17,8 @@ type Collector interface {
 	CleanUp() error                              // Stops the collector and cleans up any internal state. It should result in a state that can be started again
 	GetPollInterval() time.Duration              // Returns the collectors polling interval
 	IsAnnouncer() bool
+	ScalePollInterval(float64)
+	ResetPollInterval()
 }
 
 // A union of all values required to be passed into all constructions
@@ -41,13 +44,21 @@ type PollResult struct {
 
 type baseCollector struct {
 	callback     callbacks.Callback
+	pollInterval *LockedInterval
 	isAnnouncer  bool
 	running      bool
-	pollInterval time.Duration
 }
 
 func (base *baseCollector) GetPollInterval() time.Duration {
-	return base.pollInterval
+	return base.pollInterval.interval()
+}
+
+func (base *baseCollector) ScalePollInterval(factor float64) {
+	base.pollInterval.scale(factor)
+}
+
+func (base *baseCollector) ResetPollInterval() {
+	base.pollInterval.reset()
 }
 
 func (base *baseCollector) IsAnnouncer() bool {
@@ -73,6 +84,37 @@ func newBaseCollector(
 		callback:     callback,
 		isAnnouncer:  isAnnouncer,
 		running:      false,
-		pollInterval: time.Duration(pollInterval) * time.Second,
+		pollInterval: NewLockedInterval(pollInterval),
+	}
+}
+
+type LockedInterval struct {
+	current time.Duration
+	base    time.Duration
+	lock    sync.RWMutex
+}
+
+func (li *LockedInterval) interval() time.Duration {
+	li.lock.RLock()
+	defer li.lock.RUnlock()
+	return li.current
+}
+
+func (li *LockedInterval) scale(factor float64) {
+	li.lock.Lock()
+	li.current = time.Duration(factor * li.current.Seconds() * float64(time.Second))
+	li.lock.Unlock()
+}
+
+func (li *LockedInterval) reset() {
+	li.lock.Lock()
+	li.current = li.base
+	li.lock.Unlock()
+}
+
+func NewLockedInterval(seconds int) *LockedInterval {
+	return &LockedInterval{
+		current: time.Duration(seconds) * time.Second,
+		base:    time.Duration(seconds) * time.Second,
 	}
 }
